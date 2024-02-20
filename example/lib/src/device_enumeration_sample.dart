@@ -1,6 +1,7 @@
 import 'dart:core';
-import 'package:collection/collection.dart';
 
+import 'package:collection/collection.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -13,6 +14,7 @@ class VideoSize {
     final parts = size.split('x');
     return VideoSize(int.parse(parts[0]), int.parse(parts[1]));
   }
+
   final int width;
   final int height;
 
@@ -21,6 +23,13 @@ class VideoSize {
     return '$width x $height';
   }
 }
+
+final dio = Dio();
+
+const deviceId = '';
+const enterpriseId = '';
+const jwt = '';
+const sdmIdToken = '';
 
 /*
  * DeviceEnumerationSample
@@ -81,54 +90,65 @@ class _DeviceEnumerationSampleState extends State<DeviceEnumerationSample> {
     navigator.mediaDevices.ondevicechange = null;
   }
 
-  RTCPeerConnection? pc1;
-  RTCPeerConnection? pc2;
+  RTCPeerConnection? pc;
   var senders = <RTCRtpSender>[];
 
   Future<void> initPCs() async {
-    pc2 ??= await createPeerConnection({});
-    pc1 ??= await createPeerConnection({});
+    pc ??= await createPeerConnection({});
 
-    pc2?.onTrack = (event) {
+    pc?.onTrack = (event) {
       if (event.track.kind == 'video') {
         _remoteRenderer.srcObject = event.streams[0];
         setState(() {});
       }
     };
 
-    pc2?.onConnectionState = (state) {
+    await pc?.createDataChannel('label', RTCDataChannelInit());
+
+    pc?.onConnectionState = (state) {
       print('connectionState $state');
     };
 
-    pc2?.onIceConnectionState = (state) {
+    pc?.onIceConnectionState = (state) {
       print('iceConnectionState $state');
     };
-
-    await pc2?.addTransceiver(
-        kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
-        init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
-    await pc2?.addTransceiver(
-        kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
-        init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
-
-    pc1!.onIceCandidate = (candidate) => pc2!.addCandidate(candidate);
-    pc2!.onIceCandidate = (candidate) => pc1!.addCandidate(candidate);
   }
 
   Future<void> _negotiate() async {
-    var offer = await pc1?.createOffer();
-    await pc1?.setLocalDescription(offer!);
-    await pc2?.setRemoteDescription(offer!);
-    var answer = await pc2?.createAnswer();
-    await pc2?.setLocalDescription(answer!);
-    await pc1?.setRemoteDescription(answer!);
+    try {
+      final offer = await pc!.createOffer();
+      await pc!.setLocalDescription(offer);
+
+      final response = await dio.postUri<Map<String, dynamic>>(
+        Uri.https(
+          'preprod-smartdevicemanagement.googleapis.com',
+          '/v1/enterprises/$enterpriseId/devices/$deviceId:executeCommand',
+        ),
+        options: Options(headers: {
+          'Authorization': 'Bearer $jwt',
+          'X-SDM-ID-Token': sdmIdToken,
+        }),
+        data: <String, dynamic>{
+          'command':
+              'sdm.devices.commands.CameraLiveStreamWithTalkBack.GenerateWebRtcStream',
+          'params': {
+            'offerSdp': offer.sdp!,
+          }
+        },
+      );
+
+      final answerSDP = response.data!['results']['answerSdp'] as String;
+
+      final answer = RTCSessionDescription(answerSDP, 'answer');
+      await pc!.setRemoteDescription(answer);
+    } catch (error) {
+      print('error: $error');
+    }
   }
 
   Future<void> stopPCs() async {
-    await pc1?.close();
-    await pc2?.close();
-    pc1 = null;
-    pc2 = null;
+    await pc?.close();
+    pc = null;
   }
 
   Future<void> loadDevices() async {
@@ -259,30 +279,24 @@ class _DeviceEnumerationSampleState extends State<DeviceEnumerationSample> {
 
   Future<void> _start() async {
     try {
-      _localStream = await navigator.mediaDevices.getUserMedia({
-        'audio': true,
-        'video': {
-          if (_selectedVideoInputId != null && kIsWeb)
-            'deviceId': _selectedVideoInputId,
-          if (_selectedVideoInputId != null && !kIsWeb)
-            'optional': [
-              {'sourceId': _selectedVideoInputId}
-            ],
-          'width': _selectedVideoSize.width,
-          'height': _selectedVideoSize.height,
-          'frameRate': _selectedVideoFPS,
-        },
-      });
-      _localRenderer.srcObject = _localStream;
+      // _localStream = await navigator.mediaDevices.getUserMedia({
+      //   'audio': true,
+      //   'video': {
+      //     if (_selectedVideoInputId != null && kIsWeb)
+      //       'deviceId': _selectedVideoInputId,
+      //     if (_selectedVideoInputId != null && !kIsWeb)
+      //       'optional': [
+      //         {'sourceId': _selectedVideoInputId}
+      //       ],
+      //     'width': _selectedVideoSize.width,
+      //     'height': _selectedVideoSize.height,
+      //     'frameRate': _selectedVideoFPS,
+      //   },
+      // });
+      // _localRenderer.srcObject = _localStream;
       _inCalling = true;
 
       await initPCs();
-
-      _localStream?.getTracks().forEach((track) async {
-        var rtpSender = await pc1?.addTrack(track, _localStream!);
-        print('track.settings ' + track.getSettings().toString());
-        senders.add(rtpSender!);
-      });
 
       await _negotiate();
       setState(() {});
