@@ -116,7 +116,19 @@ class _DeviceEnumerationSampleState extends State<DeviceEnumerationSample> {
 
   Future<void> _negotiate() async {
     try {
-      final offer = await pc!.createOffer();
+      Map<String, dynamic> buildConstraints() {
+        if (kIsWeb) {
+          return {
+            'offerToReceiveAudio': true,
+            'offerToReceiveVideo': true,
+          };
+        } else {
+          return {};
+        }
+      }
+
+      final offer = await pc!.createOffer(buildConstraints());
+
       await pc!.setLocalDescription(offer);
 
       final response = await dio.postUri<Map<String, dynamic>>(
@@ -124,10 +136,13 @@ class _DeviceEnumerationSampleState extends State<DeviceEnumerationSample> {
           'preprod-smartdevicemanagement.googleapis.com',
           '/v1/enterprises/$enterpriseId/devices/$deviceId:executeCommand',
         ),
-        options: Options(headers: {
-          'Authorization': 'Bearer $jwt',
-          'X-SDM-ID-Token': sdmIdToken,
-        }),
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $jwt',
+            'X-SDM-ID-Token': sdmIdToken,
+          },
+          contentType: Headers.jsonContentType,
+        ),
         data: <String, dynamic>{
           'command':
               'sdm.devices.commands.CameraLiveStreamWithTalkBack.GenerateWebRtcStream',
